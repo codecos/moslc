@@ -1,0 +1,41 @@
+# website
+website/.idea
+website/.next
+website/node_modules
+website/out
+*.tsbuildinfo
+
+# Playwright MCP browser-automation artifacts (screenshots, snapshots, logs)
+.playwright-mcp/
+
+# macOS
+.DS_Store
+
+# XCode
+xcuserdata
+*.xcuserstate
+*.xcuserdated
+
+# Sparkle signing keys (keep private!)
+sparkle_private_key.txt
+
+# Local build output
+build/
+Mos.xcodeproj/-Xcc/
+
+# build
+build/*.zip
+/build
+/spec
+.superpowers/
+/.agents/worktrees
+/.agents/scheduled_tasks.lock
+/.claude/worktrees
+/.claude/scheduled_tasks.lock
+/.codex-archives
+
+# Single package manager: npm only (enforced by scripts/only-npm.mjs on preinstall).
+# Block stray lockfiles from other managers so they can't be committed.
+pnpm-lock.yaml
+yarn.lock
+bun.lockb
