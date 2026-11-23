@@ -67,10 +67,9 @@ class ScrollPoster {
     private let dispatchContext = ScrollDispatchContext.shared
     // 滚动配置快照: 主线程在 update 时捕获, CVDisplayLink 线程只读, 避免热路径跨线程读 Options/ScrollCore
     private struct ConfigSnapshot {
-        var simTrackpadEnabled: Bool
         var deadZone: Double
     }
-    private var config = ConfigSnapshot(simTrackpadEnabled: false, deadZone: 1.0)
+    private var config = ConfigSnapshot(deadZone: 1.0)
     // CVDisplayLink 恢复机制
     private var keeper: Timer?
     private var lastCallbackTime: CFTimeInterval = 0.0
@@ -87,6 +86,11 @@ class ScrollPoster {
     private let rateVerifyRatio = 0.7
     // 主线程访问, 无需锁
     var isAvailable: Bool { return poster != nil }
+    // phase 写入判定的按进程缓存 (post 在 display link 线程, stop 在主线程, 需加锁)
+    private let phaseGateLock = NSLock()
+    private var phaseGateByPID: [pid_t: Bool] = [:]
+    // 最近一次投递的目标进程: stop() 时可能没有可用的 pending 事件, 用它做兜底判定
+    private var lastTargetPID: pid_t = 0
 }
 
 // MARK: - 滚动数据更新控制
@@ -181,19 +185,12 @@ extension ScrollPoster {
         captureConfigSnapshotLocked()
         os_unfair_lock_unlock(&stateLock)
     }
-    var configSnapshotForTests: (simTrackpadEnabled: Bool, deadZone: Double) {
+    var configSnapshotForTests: Double {
         os_unfair_lock_lock(&stateLock)
         defer { os_unfair_lock_unlock(&stateLock) }
-        return (config.simTrackpadEnabled, config.deadZone)
+        return config.deadZone
     }
 
-    func recordSkippedSyntheticEvent() {
-        dispatchContext.recordSkippedSyntheticEvent()
-    }
-
-    func diagnosticsSnapshot() -> (postedFrames: UInt64, droppedFramesByGeneration: UInt64, droppedFramesByTTL: UInt64, skippedSyntheticEvents: UInt64, updateSnapshotFailures: UInt64) {
-        dispatchContext.diagnosticsSnapshot()
-    }
 #endif
 
     private func resetUnlocked() {
@@ -285,8 +282,6 @@ extension ScrollPoster {
         dispatchContext.advanceGeneration()
         os_unfair_lock_lock(&stateLock)
 
-        // 判断是否启用触控板模拟 (读 update 时主线程捕获的快照, 避免跨线程读)
-        let enableSimTrackpad = config.simTrackpadEnabled
         let plan: ScrollPhase.TransitionPlan
         if requestedPhase == Phase.MomentumEnd {
             plan = ScrollPhase.shared.onMomentumFinish()
@@ -294,12 +289,12 @@ extension ScrollPoster {
             plan = ScrollPhase.shared.onManualInputEnded()
         }
 
-        // 发送结束事件
-        if enableSimTrackpad {
+        // 发送结束事件: Chromium 系需要完整收尾序列, 其余应用只补一帧 TrackingEnd
+        if shouldWriteScrollPhase(pid: lastKnownTargetPID()) {
             perform(plan, emitTargetImmediately: true)
         } else {
             if let snapshot = dispatchContext.preparePostingSnapshot(),
-               ScrollUtils.shared.isEventTargetingChrome(snapshot.event),
+               shouldWriteScrollPhase(for: snapshot.event),
                let phaseValues = phaseValues(for: .TrackingEnd) {
                 _ = post(
                     snapshot,
@@ -314,14 +309,6 @@ extension ScrollPoster {
         // 重置参数 (不递增 generation, 保留本次收尾帧有效性)
         resetUnlocked()
         os_unfair_lock_unlock(&stateLock)
-#if DEBUG
-        let diag = diagnosticsSnapshot()
-        if diag.droppedFramesByGeneration > 0 || diag.droppedFramesByTTL > 0 || diag.updateSnapshotFailures > 0 {
-            NSLog("[ScrollPoster] diag: posted=%llu dropGen=%llu dropTTL=%llu skipSynth=%llu snapFail=%llu",
-                  diag.postedFrames, diag.droppedFramesByGeneration, diag.droppedFramesByTTL,
-                  diag.skippedSyntheticEvents, diag.updateSnapshotFailures)
-        }
-#endif
     }
     // 重建 CVDisplayLink (带冷却期)
     @discardableResult
@@ -439,7 +426,7 @@ private extension ScrollPoster {
             ScrollPhase.shared.didDeliverFrame()
             return
         }
-        let phaseOverride = resolveSimTrackpadEnabled() ? phaseValues(for: item.0) : nil
+        let phaseOverride = shouldWriteScrollPhase(for: snapshot.event) ? phaseValues(for: item.0) : nil
         _ = post(snapshot, delta, phaseOverride: phaseOverride, fallbackToCurrentPhase: false)
     }
 
@@ -620,20 +607,57 @@ private extension ScrollPoster {
 
     /// 主线程读取当前 (全局 / 例外应用) 配置存入快照。调用方须持有 stateLock。
     func captureConfigSnapshotLocked() {
-        let simTrackpad: Bool
-        if let application = ScrollCore.shared.application, !application.inherit {
-            simTrackpad = application.scroll.smoothSimTrackpad
-        } else {
-            simTrackpad = Options.shared.scroll.smoothSimTrackpad
-        }
-        config = ConfigSnapshot(
-            simTrackpadEnabled: simTrackpad,
-            deadZone: Options.shared.scroll.deadZone
-        )
+        config = ConfigSnapshot(deadZone: Options.shared.scroll.deadZone)
     }
 
-    func resolveSimTrackpadEnabled() -> Bool {
-        return config.simTrackpadEnabled
+    // 是否需要为目标应用写入完整 phase 序列。
+    // Chromium 系 (Chrome 本体以及 Electron / CEF 应用) 会解析 phase, 缺少 Began/Ended
+    // 时不 commit 滚动; 其余应用保持原版 Mos 形态(不写 phase), 避免个别应用收到非零
+    // phase 反而把事件整体丢弃。判定按进程缓存, 只在首次遇到时做一次 bundle 检查。
+    func shouldWriteScrollPhase(for event: CGEvent) -> Bool {
+        shouldWriteScrollPhase(pid: pid_t(event.getIntegerValueField(.eventTargetUnixProcessID)))
+    }
+
+    func shouldWriteScrollPhase(pid: pid_t) -> Bool {
+        guard pid > 0 else { return false }
+        phaseGateLock.lock()
+        lastTargetPID = pid
+        let cached = phaseGateByPID[pid]
+        phaseGateLock.unlock()
+        if let cached { return cached }
+        let verdict = Self.isChromiumApplication(pid: pid)
+        phaseGateLock.lock()
+        if phaseGateByPID.count > 64 { phaseGateByPID.removeAll(keepingCapacity: true) }
+        phaseGateByPID[pid] = verdict
+        phaseGateLock.unlock()
+        return verdict
+    }
+
+    func lastKnownTargetPID() -> pid_t {
+        phaseGateLock.lock()
+        defer { phaseGateLock.unlock() }
+        return lastTargetPID
+    }
+
+    private static func isChromiumApplication(pid: pid_t) -> Bool {
+        guard let app = NSRunningApplication(processIdentifier: pid) else { return false }
+        return isChromiumBundle(bundleIdentifier: app.bundleIdentifier, bundleURL: app.bundleURL)
+    }
+
+    /// 纯判定, 便于单测: Chrome 本体按 bundleID, Electron / CEF 按框架目录。
+    static func isChromiumBundle(bundleIdentifier: String?, bundleURL: URL?) -> Bool {
+        if bundleIdentifier == "com.google.Chrome" { return true }
+        guard let bundleURL else { return false }
+        let frameworks = bundleURL.appendingPathComponent("Contents/Frameworks")
+        let candidates = [
+            "Electron Framework.framework",
+            "Chromium Embedded Framework.framework",
+            "Google Chrome Framework.framework",
+            "Chromium Framework.framework"
+        ]
+        return candidates.contains {
+            FileManager.default.fileExists(atPath: frameworks.appendingPathComponent($0).path)
+        }
     }
 
     func phaseValues(for phase: Phase) -> (scroll: Double, momentum: Double)? {
@@ -650,7 +674,7 @@ private extension ScrollPoster {
             snapshot.event.setDoubleValueField(.scrollWheelEventScrollPhase, value: override.scroll)
             snapshot.event.setDoubleValueField(.scrollWheelEventMomentumPhase, value: override.momentum)
         } else if fallbackToCurrentPhase,
-                  resolveSimTrackpadEnabled(),
+                  shouldWriteScrollPhase(for: snapshot.event),
                   let currentPhaseValues = phaseValues(for: ScrollPhase.shared.phase) {
             snapshot.event.setDoubleValueField(.scrollWheelEventScrollPhase, value: currentPhaseValues.scroll)
             snapshot.event.setDoubleValueField(.scrollWheelEventMomentumPhase, value: currentPhaseValues.momentum)
@@ -684,16 +708,15 @@ private extension ScrollPoster {
         }
         snapshot.event.timestamp = ts
         lastPostedTimestamp = ts
-        if resolveSimTrackpadEnabled() {
-            // 真实触控板事件只有点增量, 行增量为 0。原始滚轮事件的 deltaAxis 是整格值,
-            // 留着会让读 deltaY(而非 scrollingDeltaY) 的应用仍然一格一格跳。
-            // 注意: 这段不能对普通平滑路径生效——关掉触控板模拟时, 很多应用把
-            // 行增量全为 0 的事件直接判为空事件丢弃, 表现就是完全滚不动。
-            snapshot.event.setIntegerValueField(.scrollWheelEventDeltaAxis1, value: 0)
-            snapshot.event.setIntegerValueField(.scrollWheelEventDeltaAxis2, value: 0)
-            snapshot.event.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1, value: v.y)
-            snapshot.event.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2, value: v.x)
-        }
+        // 行增量(DeltaAxis)保持模板原值, 不清零。
+        // 清零行增量是"模拟真实触控板"的做法, 但有一部分应用(跨平台引擎、SDL/Qt 系、
+        // 自绘游戏)只读 deltaY, 不看 scrollingDeltaY; 收到行增量为 0 的事件会直接判为
+        // 空事件丢弃, 表现就是完全滚不动 —— 这正是"开启模拟触控板后所有应用都不滚"的原因。
+        // 但 FixedPtDelta 必须跟随真实位移: 它对应 NSEvent.deltaY(定点行增量), 若保留
+        // 模板残值, 只读该字段的接收方(典型如 Electron 系)每帧只会看到恒定的零点几行,
+        // 同样表现为滚不动。两者职责不同, 不能一起删。
+        snapshot.event.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1, value: v.y)
+        snapshot.event.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2, value: v.x)
         ScrollUtils.shared.markSyntheticSmoothEvent(snapshot.event)
         // 通过 CGEventPostToPid 直投目标进程:
         // 不依赖 proxy (消除崩溃), 不经过 tap 链重新路由 (动量不跟随光标)

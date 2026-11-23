@@ -63,9 +63,6 @@ class ScrollCore: ScrollActionPort {
         }
         // 跳过 Mos 自己合成的平滑事件，避免重复进入平滑管线
         if ScrollUtils.shared.isSyntheticSmoothEvent(event) {
-#if DEBUG
-            ScrollPoster.shared.recordSkippedSyntheticEvent()
-#endif
             return Unmanaged.passUnretained(event)
         }
         // 滚动事件
