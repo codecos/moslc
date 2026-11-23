@@ -39,3 +39,6 @@ build/*.zip
 pnpm-lock.yaml
 yarn.lock
 bun.lockb
+
+# Coverage artifacts
+*.profraw

@@ -624,7 +624,7 @@
 				DEVELOPMENT_TEAM = N7Z52F27XK;
 				ENABLE_HARDENED_RUNTIME = YES;
 				INFOPLIST_FILE = Mos/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "moslc Debug";
+				INFOPLIST_KEY_CFBundleDisplayName = moslc;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -634,9 +634,9 @@
 				MARKETING_VERSION = 4.3.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				"OTHER_SWIFT_FLAGS[arch=*]" = "-DDEBUG";
-				PRODUCT_BUNDLE_IDENTIFIER = me.local.moslc.debug;
+				PRODUCT_BUNDLE_IDENTIFIER = me.local.moslc;
 				PRODUCT_MODULE_NAME = Mos;
-				PRODUCT_NAME = "moslc Debug";
+				PRODUCT_NAME = moslc;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
 				RUNTIME_EXCEPTION_ALLOW_JIT = NO;

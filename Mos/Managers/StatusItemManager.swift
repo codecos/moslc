@@ -40,10 +40,6 @@ extension StatusItemManager {
                 buildRequireAccessibilityMenu()
                 return
             }
-            // DEBUG: 直接弹出设置窗口
-            #if DEBUG
-            buildOptionMenu()
-            #else
             // 当按下 option 键显示特殊菜单
             guard !event.modifierFlags.contains(.option) else {
                 buildOptionMenu()
@@ -51,7 +47,6 @@ extension StatusItemManager {
             }
             // 弹出菜单
             buildNormalMenu()
-            #endif
         }
     }
 }
@@ -77,12 +72,6 @@ extension StatusItemManager {
         if let menu = item.menu {
             // Reset
             menu.removeAllItems()
-            // Monitor
-            Utils.addMenuItem(to: menu, title: "Debug: Event Monitor", action: #selector(monitorClick))
-            // HID++ Debug
-            Utils.addMenuItem(to: menu, title: "Debug: HID++", action: #selector(hidDebugClick))
-            // Toast Debug
-            Utils.addMenuItem(to: menu, title: "Debug: Toast", action: #selector(toastDebugClick))
             // Preferences
             Utils.addMenuItem(to: menu, title: NSLocalizedString("Preferences", comment: ""), icon: #imageLiteral(resourceName: "SF.gauge"), action: #selector(preferencesClick))
             // Quit
@@ -99,15 +88,6 @@ extension StatusItemManager {
             // Quit
             Utils.addMenuItemWithSeparator(to: menu, title: NSLocalizedString("Quit", comment: ""), icon: #imageLiteral(resourceName: "SF.escape"), action: #selector(quitClick))
         }
-    }
-    @objc func monitorClick() {
-        WindowManager.shared.showWindow(withIdentifier: WINDOW_IDENTIFIER.monitorWindowController)
-    }
-    @objc func hidDebugClick() {
-        LogiCenter.shared.showDebugPanel()
-    }
-    @objc func toastDebugClick() {
-        Toast.showTestPanel()
     }
     @objc func preferencesClick() {
         WindowManager.shared.showWindow(withIdentifier: WINDOW_IDENTIFIER.preferencesWindowController)
