@@ -38,6 +38,43 @@
   <img src="assets/readme/zh-cn/application-settings.png" alt="Mos 按应用配置滚动" width="920">
 </p>
 
+## 本仓库的改动（moslc）
+
+本仓库是 [Caldis/Mos](https://github.com/Caldis/Mos) 的修改版，沿用上游授权（CC BY-NC 4.0，仅限非商业使用）。相对上游的改动集中在滚动核心：
+
+| # | 改动 | 落点 |
+| --- | --- | --- |
+| 1 | **平滑器换成二阶临界阻尼低通（LC 等效）**：`x'' = ω²(target−x) − 2ζωx'`，`ω = 1.6/τ`，`τ = −1/(60·ln(1−duration))`，4 子步半隐式欧拉；换向与刹车时清零速度 | `ScrollCore/ScrollPoster.swift` |
+| 2 | **sigma-delta 整数量化投递**：小数位移留在 `pending` 顺延，不足 1pt 的帧连时长（`unpostedStepNs`）一起递到下次投递，余量小于 `deadZone` 才停 | 同上 |
+| 3 | **时间轴与刷新率解耦**：dt 取 `CVDisplayLink` 的 vsync 时刻，标称帧长读 `linkNominalHz`，钳位 `[0.5, 3]×` 本屏帧长，预热按 100ms 折算，dt 用 60ms 时间常数平滑 | 同上 |
+| 4 | **事件时间戳逐帧推进**：相邻注入事件间隔严格等于刷新周期，只有落后真实时间超过 50ms 才重新对齐 | 同上 |
+| 5 | **时间戳单位现场标定 + 同步投递**：`CGEvent.timestamp` 按实测系数换算，`postQueue.async → sync` | `ScrollCore/ScrollDispatchContext.swift` |
+| 6 | 模拟触控板默认开启（`smoothSimTrackpad = true`） | `Options/Options.swift`、`Utils/Constants.swift` |
+| 7 | 移除 Sparkle 更新通道，避免被官方更新包覆盖 | `Info.plist`、`Managers/UpdateManager.swift` |
+| 8 | 应用标识独立：`moslc` / `me.local.moslc`，可与官方 Mos 并存 | `Mos.xcodeproj` 及相关字符串 |
+
+逐条细节（行号、参数含义、实测数据）见 [NOTICE.md](NOTICE.md)。
+
+滚动手感保持与上游一致：60Hz 下 400±3 帧、净位移 1823±15pt、耗时 6765±20ms，与上游逐帧对齐；差异只体现在 120Hz 及以上不再随刷新率漂移。
+
+### 实测（60Hz 内置屏，24 个 1-line 事件、间隔 16ms）
+
+| 指标 | moslc | 官方 Mos 4.2.1 |
+| --- | --- | --- |
+| 输出帧数 | 400~403 | 370 |
+| 输出帧率 | 59.9 Hz | 59.9 Hz |
+| **帧间隔抖动 σ** | **2.42 ms** | **7.93 ms** |
+| 净位移总量 | 1823~1833 pt | 1615 pt |
+| 滚动耗时 | 6739~6770 ms | 6755 ms |
+| 前 10 帧位移 | `2 5 6 8 9 9 9 10 9 8` | `3 5 7 8 8 9 8 8 8 8` |
+
+- 抖动**约 3 倍优势**来自 vsync 时间戳驱动；官方按回调被调起的时刻递推，节拍跟着 `CVDisplayLink` 抖动走
+- 净位移多 12.9% 与低通无关，差额来自 `ScrollCore.swift:150` 的抬平（`1 line → step=33.6`），官方没有这段
+- 多出约 30 帧是尾段 sigma-delta 把不足 1pt 的余量与未投递时长走完
+
+上表的测量方法、判废容差、原生基准与未覆盖项见 [BENCHMARK.md](BENCHMARK.md)。
+
+
 ## 为什么是 Mos
 
 普通滚轮在 macOS 上常常显得生硬, 这是由于滚轮的精度不足导致的。Mos 会接管鼠标滚轮事件，将滚动行为插值转换成更顺滑的滚动，同时保留每个应用、每个方向、每颗按键的控制权。
@@ -133,4 +170,4 @@ Copyright (c) 2017-2026 Caldis. All rights reserved.
 Mos 使用 [CC BY-NC 4.0](http://creativecommons.org/licenses/by-nc/4.0/) 授权。请不要将 Mos 上传到 App Store。
 
 > **本仓库是 Mos 的修改版（moslc）**：基于 [Caldis/Mos](https://github.com/Caldis/Mos) 修改，沿用 CC BY-NC 4.0，仅作个人非商业使用。
-> 相对上游的全部修改点与署名信息见 [NOTICE.md](NOTICE.md)。
+> 相对上游的全部修改点见上节「本仓库的改动（moslc）」，逐条细节与署名信息见 [NOTICE.md](NOTICE.md)。
